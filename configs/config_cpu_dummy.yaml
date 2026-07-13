@@ -1,0 +1,49 @@
+# CPU end-to-end smoke-test config.
+# Inherits the full online-spin-language-emb setup from config_our, then forces
+# everything onto CPU and shrinks it so a single training step runs on a laptop.
+#
+# Run with:
+#   CUDA_VISIBLE_DEVICES="" python train.py --config-dir configs --config-name config_cpu_dummy
+# (or use run_cpu_dummy.sh)
+#
+# NOTE: even on CPU the online SPIN + ECAPA2 path still downloads its backbones
+# once: hubert_base_ls960.pt (s3prl, ~360MB) and ecapa2.pt (Jenthe/ECAPA2).
+# Make sure you have internet the first time, or pre-populate the HF/s3prl cache.
+defaults:
+  - config_our
+  - _self_
+
+path: dataset_custom/runs/cpu_dummy
+log_level: INFO
+seed: 1806
+
+train:
+  batch_size: 2
+  epochs: 1
+  fp16_run: false          # MUST be false on CPU (cuda autocast is GPU-only)
+  distributed: false
+  use_multiprocessing: false
+  resume_training: false
+  raise_error: true        # surface any error instead of swallowing it
+  valid_steps_interval: 5
+  save_steps_interval: 2
+  valid_epoch_interval: 1000000
+  save_epoch_interval: 1
+  # Use the simple bucket sampler (no weighted sampling) to keep the test minimal
+  weighted_batch_speaker_sampling: 0.0
+  weighted_batch_lang_sampling: 0.0
+
+data:
+  dataset_dir: dataset_custom
+  training_files: ${data.dataset_dir}/train.csv
+  validation_files: ${data.dataset_dir}/valid_tiny.csv
+  num_workers: 0           # no dataloader subprocesses for a local dry run
+  pitch_predictor: pm      # parselmouth-based: needs NO rmvpe.pt checkpoint
+  pitch_features_dir: null # compute pitch on the fly during the test
+
+model:
+  device: cpu              # ECAPA2 (and anything reading model.device) loads on CPU
+  save_dir: dataset_custom/checkpoints_cpu_dummy
+  finetune_from_model:
+    generator: null        # don't require freevc-24.pth just to smoke-test the loop
+    discriminator: null
