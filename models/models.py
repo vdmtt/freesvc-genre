@@ -99,7 +99,10 @@ class Encoder(nn.Module):
                  cond_f0=False,
                  cond_lang=False,
                  lang_dim=0,
-                 num_langs=1):
+                 num_langs=1,
+                 cond_genre = False,
+                 genre_dim= 0,
+                 num_genres = 1):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -118,13 +121,16 @@ class Encoder(nn.Module):
             self.lang_emb = nn.Embedding(num_langs, lang_dim)
         else:
             self.lang_emb = None
-
+        if cond_genre:
+            self.genre_emb = nn.Embedding(num_genres,genre_dim)
+        else:
+            self.genre_emb = None
         self.pre = nn.Conv1d(in_channels, hidden_channels, 1)
         self.enc = modules.WN(hidden_channels, kernel_size,
                               dilation_rate, n_layers, gin_channels=self.gin_channels)
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
-    def forward(self, x, x_lengths, g=None, f0=None, lang_id=None):
+    def forward(self, x, x_lengths, g=None, f0=None, lang_id=None, genre_id = None):
         x_mask = torch.unsqueeze(commons.sequence_mask(
             x_lengths, x.size(2)), 1).to(x.dtype)
         x = self.pre(x) * x_mask
@@ -132,6 +138,8 @@ class Encoder(nn.Module):
             x = x + self.f0_emb(f0).squeeze(1).transpose(1, 2)
         if self.lang_emb:
             x = x + self.lang_emb(lang_id).unsqueeze(-1) # Use of broadcasting
+        if self.genre_emb:
+            x= x+ self.genre_emb(genre_id).unsqueeze(-1)
         x = self.enc(x, x_mask, g=g)
         stats = self.proj(x) * x_mask
         m, logs = torch.split(stats, self.out_channels, dim=1)
@@ -446,6 +454,9 @@ class SynthesizerTrn(nn.Module):
                 cond_lang=self.config.data.get("use_lang_emb", False),
                 num_langs=self.config.data.get("num_langs", 7),
                 lang_dim=self.config.data.get("lang_dim", 192),
+                cond_genre=self.config.data.get("use_genre_emb",False),
+                num_genres = self.config.data.get("num_genres",1),
+                genre_dim = self.config.data.get("genre_dim",192),
             )
         elif self.config.model.post_content_encoder_type == "vits-encoder-with-uv-emb":
             # transformer encoder with voice/unvoice embedding and pitch embedding
@@ -462,6 +473,9 @@ class SynthesizerTrn(nn.Module):
                 cond_lang=self.config.data.get("use_lang_emb", False),
                 num_langs=self.config.data.get("num_langs", 7),
                 lang_dim=self.config.data.get("lang_dim", 192),
+                cond_genre = self.config.data.get("use_genre_emb",False),
+                num_genres=self.config.data.get("num_genres",1),
+                genre_dim = self.config.data.get("genre_dim",192),
             )
         else:
             raise ValueError(f"Unknown post_content_encoder_type: {self.config.post_content_encoder_type}")
@@ -507,7 +521,7 @@ class SynthesizerTrn(nn.Module):
 
         return g
 
-    def forward(self, spec, y=None, c=None, g=None, mel=None, c_lengths=None, spec_lengths=None, pitch=None, lang_id=None):
+    def forward(self, spec, y=None, c=None, g=None, mel=None, c_lengths=None, spec_lengths=None, pitch=None, lang_id=None,genre_id=None):
 
         if c is None:
             if self.c_model is None:
@@ -537,7 +551,7 @@ class SynthesizerTrn(nn.Module):
         if self.coarse_f0:
             pitch = f0_to_coarse(pitch).detach()
 
-        _, m_p, logs_p, _ = self.enc_p(c, c_lengths, f0=pitch if not self.cond_f0_on_flow else None, lang_id=lang_id)
+        _, m_p, logs_p, _ = self.enc_p(c, c_lengths, f0=pitch if not self.cond_f0_on_flow else None, lang_id=lang_id,genre_id = genre_id)
 
         z, m_q, logs_q, spec_mask = self.enc_q(spec, spec_lengths, g=g)
         z_p = self.flow(z, spec_mask, g=g, pitch=pitch.float() if self.cond_f0_on_flow else None)
@@ -548,7 +562,7 @@ class SynthesizerTrn(nn.Module):
 
         return o, ids_slice, spec_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
 
-    def infer(self, c=None, y=None, g=None, mel=None, c_lengths=None, pitch=None, lang_id=None):
+    def infer(self, c=None, y=None, g=None, mel=None, c_lengths=None, pitch=None, lang_id=None,genre_id=None):
 
         if c is None:
             if self.c_model is None:
@@ -574,13 +588,13 @@ class SynthesizerTrn(nn.Module):
         if self.coarse_f0:
             pitch = f0_to_coarse(pitch).detach()
 
-        z_p, _, _, c_mask = self.enc_p(c, c_lengths, f0=pitch if not self.cond_f0_on_flow else None, lang_id=lang_id)
+        z_p, _, _, c_mask = self.enc_p(c, c_lengths, f0=pitch if not self.cond_f0_on_flow else None, lang_id=lang_id,genre_id = genre_id)
         z = self.flow(z_p, c_mask, g=g, pitch=pitch.float() if self.cond_f0_on_flow else None, reverse=True)
         o = self.dec(z * c_mask, g=g)
 
         return o
 
-    def voice_conversion(self, c_src=None, y_src=None, y_tgt=None, g_tgt=None, mel_tgt=None, c_lengths=None, pitch_tgt=None, lang_id_src=None):
+    def voice_conversion(self, c_src=None, y_src=None, y_tgt=None, g_tgt=None, mel_tgt=None, c_lengths=None, pitch_tgt=None, lang_id_src=None,genre_id_src = None):
         if c_src is None:
             if self.c_model is None:
                 raise ValueError("c_src is None and c_model is also None")
@@ -605,7 +619,7 @@ class SynthesizerTrn(nn.Module):
         if self.coarse_f0:
             pitch_tgt = f0_to_coarse(pitch_tgt).detach()
 
-        z_p, _, _, c_mask = self.enc_p(c_src, c_lengths, f0=pitch_tgt if not self.cond_f0_on_flow else None, lang_id=lang_id_src)
+        z_p, _, _, c_mask = self.enc_p(c_src, c_lengths, f0=pitch_tgt if not self.cond_f0_on_flow else None, lang_id=lang_id_src,genre_id = genre_id_src)
         z = self.flow(z_p, c_mask, g=g_tgt, pitch=pitch_tgt.float() if self.cond_f0_on_flow else None, reverse=True)
         o = self.dec(z * c_mask, g=g_tgt)
 

@@ -362,7 +362,7 @@ class TextEncoder(nn.Module):
       cond_f0=True,
       cond_lang=False,
       lang_dim=0,
-      num_langs=1):
+      num_langs=1,cond_genre=False, genre_dim = 0,num_genres = 1):
     super().__init__()
     self.out_channels = out_channels
     self.hidden_channels = hidden_channels
@@ -381,7 +381,10 @@ class TextEncoder(nn.Module):
         self.lang_emb = nn.Embedding(num_langs, lang_dim)
     else:
         self.lang_emb = None
-
+    if cond_genre:
+        self.genre_emb = nn.Embedding(num_genres,genre_dim)
+    else:
+        self.genre_emb = None
     self.enc_ =  Encoder(
         hidden_channels,
         filter_channels,
@@ -390,7 +393,7 @@ class TextEncoder(nn.Module):
         kernel_size,
         p_dropout)
 
-  def forward(self, x, x_lengths, f0=None, lang_id=None, noice_scale=1):
+  def forward(self, x, x_lengths, f0=None, lang_id=None, genre_id = None, noice_scale=1):
     x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
     # compute vuv vector
     if self.emb_uv:
@@ -407,7 +410,8 @@ class TextEncoder(nn.Module):
 
     if self.lang_emb:
       x = x + self.lang_emb(lang_id).unsqueeze(-1) # Use of broadcasting
-
+    if self.genre_emb:
+      x = x + self.genre_emb(genre_id).unsqueeze(-1)
     x = self.enc_(x * x_mask, x_mask)
     stats = self.proj(x) * x_mask
     m, logs = torch.split(stats, self.out_channels, dim=1)

@@ -80,7 +80,7 @@ class Trainer:
         self.n_data_loader_workers = self.config.data.num_workers
         self.scaler = GradScaler(enabled=config.train.fp16_run)
 
-    def _train_step(self, net_g, net_d, optim_g, optim_d, c, spec, y, pitch, spk=None, lang_id=None, rank=0, writer=None, writer_valid=None):
+    def _train_step(self, net_g, net_d, optim_g, optim_d, c, spec, y, pitch, spk=None, lang_id=None, genre_id =None,rank=0, writer=None, writer_valid=None):
 
         self.logger.debug(f"c: {c.shape if c is not None else None}, spec: {spec.shape}, y: {y.shape}, pitch: {pitch.shape}, g: {spk.shape if spk is not None else None}")
         spec = spec.cuda(rank, non_blocking=True)
@@ -99,7 +99,7 @@ class Trainer:
         with autocast(enabled=self.config.train.fp16_run):
             y_hat, ids_slice, z_mask,\
                 (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(
-                   spec=spec, y=y, c=c, g=spk, mel=mel, pitch=pitch, lang_id=lang_id
+                   spec=spec, y=y, c=c, g=spk, mel=mel, pitch=pitch, lang_id=lang_id,genre_id = genre_id
                 )
 
             y_mel = commons.slice_segments(
@@ -213,21 +213,10 @@ class Trainer:
             try:
                 if items is None:
                     continue
-                if self.config.data.use_spk_emb and not self.config.data.get("use_lang_emb", False):
-                    c, spec, y, pitch, spk = items
-                    spk = spk.cuda(rank, non_blocking=True)
-                elif self.config.data.use_spk_emb and self.config.data.get("use_lang_emb", False):
-                    c, spec, y, pitch, spk, lang_id = items
-                    spk = spk.cuda(rank, non_blocking=True)
-                    lang_id = lang_id.cuda(rank, non_blocking=True)
-                elif self.config.data.get("use_lang_emb", False) and not self.config.data.use_spk_emb:
-                    c, spec, y, pitch, lang_id = items
-                    spk = None
-                    lang_id = lang_id.cuda(rank, non_blocking=True)
-                else:
-                    c, spec, y, pitch = items
-                    spk = None
-                    lang_id = None
+                c,spec,y,pitch,spk,lang_id, genre_id = items
+                if spk is not None: spk = spk.cuda(rank,non_blocking=True)
+                if lang_id is not None: lang_id = lang_id.cuda(rank,non_blocking = True)
+                if genre_id is not None: genre_id = genre_id.cuda(rank,non_blocking = True)
                 self._train_step(
                     net_g=net_g,
                     net_d=net_d,
@@ -239,6 +228,7 @@ class Trainer:
                     pitch=pitch,
                     spk=spk,
                     lang_id=lang_id,
+                    genre_id = genre_id,
                     rank=rank,
                     writer=writer
                 )

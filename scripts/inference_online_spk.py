@@ -171,7 +171,19 @@ def compute_target_embedding_online(
     cache[key] = g_tgt
     print(f"[spk online] {speaker_tgt}: averaged {len(embs)} ref wav(s), dim={g_tgt.shape[1]}")
     return g_tgt
-
+def _resolve_genre_id(src_path, genre2id, segment2genre, forced_genre=None):   # [GENRE]
+    if genre2id is None:
+        return None
+    if forced_genre is not None:
+        genre = forced_genre
+    else:
+        stem = os.path.basename(src_path).replace(".wav", "")
+        seg = stem.rsplit("_", 1)[-1]            # xxxxyyyy lấy từ bên phải
+        genre = segment2genre.get(seg)
+        if genre is None:
+            print(f"[GENRE] WARNING: khong tim thay genre cho segment '{seg}' ({src_path}); genre_id=None")
+            return None
+    return torch.tensor(genre2id[genre]).unsqueeze(0).cuda()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -199,6 +211,7 @@ def main():
     parser.add_argument("--use-timestamp", default=False, action="store_true")
     parser.add_argument("--concat-audio", default=False, action="store_true")
     parser.add_argument('-pf', "--pitch-factor", default=0.9544, type=float)
+    parser.add_argument("--genre",type = str, default = None,help = "1 genre for all source (key in genre2id")
     args = parser.parse_args()
 
     if args.spk_mode == "online":
@@ -243,6 +256,21 @@ def main():
     else:
         lang2id = None
 
+
+    if hasattr(hps.data, "genre2id"):  # [GENRE]
+        genre2id = hps.data.genre2id
+        segment2genre = {}
+        if getattr(hps.data, "genre_map", None):
+            with open(hps.data.genre_map, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    seg, genre = line.split(",", 1)  # "xxxxyyyy,genre"
+                    segment2genre[seg.strip()] = genre.strip()
+    else:
+        genre2id = None
+        segment2genre = {}
     # Load metadata
     srcs, lang_srcs, speaker_srcs, speaker_tgts, lang_tgts = [], [], [], [], []
     rawrows = load_dataset_csv(args.metadata_path)
@@ -276,6 +304,7 @@ def main():
             else:
                 lang_src_id = lang2id[lang_src]
                 lang_src_id = torch.tensor(lang_src_id).unsqueeze(0).cuda()
+            genre_src_id = _resolve_genre_id(src, genre2id, segment2genre, args.genre)   # [GENRE]
 
             # Get target speaker embedding
             if args.spk_mode == "online":
@@ -341,7 +370,8 @@ def main():
                             mel_tgt=None,
                             c_lengths=None,
                             pitch_tgt=pitch,
-                            lang_id_src=lang_src_id
+                            lang_id_src=lang_src_id,
+                            genre_id_src = genre_src_id,
                         )
                         audio = audio[0][0].data.cpu().float().numpy()
                         if i == 0:
@@ -384,7 +414,8 @@ def main():
                     mel_tgt=None,
                     c_lengths=None,
                     pitch_tgt=pitch,
-                    lang_id_src=lang_src_id
+                    lang_id_src=lang_src_id,
+                    genre_id_src= genre_src_id,
                 )
                 audio = audio[0][0].data.cpu().float().numpy()
 

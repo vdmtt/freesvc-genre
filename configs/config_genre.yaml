@@ -1,0 +1,81 @@
+defaults:
+  - config-online-spin-language-emb
+  - _self_
+
+path: dataset_custom/runs/officialstyle_freevcGD
+log_level: INFO
+seed: 1806
+
+train:
+  batch_size: 16
+  max_steps: 300000
+  epochs: 50
+  fp16_run: true
+
+  distributed: false
+  use_multiprocessing: false
+  resume_training: false
+  raise_error: true
+
+  learning_rate: 2e-4
+  log_interval: 10
+
+  valid_steps_interval: 1000
+  save_steps_interval: 5000
+  valid_epoch_interval: 1
+  save_epoch_interval: 5
+
+  weighted_batch_speaker_sampling: 0.5
+  weighted_batch_lang_sampling: 0.0
+
+data:
+  dataset_dir: dataset_custom
+
+  training_files: ${data.dataset_dir}/train.csv
+  validation_files: ${data.dataset_dir}/valid.csv
+
+  sampling_rate: 24000
+  filter_length: 1280
+  hop_length: 320
+  win_length: 1280
+  n_mel_channels: 80
+  num_workers: 8
+
+  pitch_predictor: rmvpe
+  pitch_features_dir: ${data.dataset_dir}/pitch_features
+
+  use_lang_emb: true
+  use_genre_emb: true
+  num_genres: 5
+  genre_dim: 192
+  genre_map: ${data.dataset_dir}/genre_map.csv
+  genre2id:
+    blues: 0
+    funksoulrnb: 1
+    jazz: 2
+    pop: 3
+    rock: 4
+  use_spk_emb: false
+  spk_embeddings_dir: null
+  content_feature_dir: null
+
+model:
+  save_dir: null
+  device: cuda
+
+  finetune_from_model:
+    generator: pretrained/freevc-24.pth
+    discriminator: pretrained/D-freevc-24.pth
+
+  use_spk_emb: true
+  spk_encoder_type: ECAPA2SpeakerEncoder16k
+  spk_encoder_ckpt: null
+  freeze_external_spk: true
+
+  content_encoder_type: spin
+  content_encoder_config: models/spin/spin.yaml
+  content_encoder_ckpt: models/spin/spin.ckpt
+
+  post_content_encoder_type: vits-encoder-with-uv-emb
+  coarse_f0: true
+  cond_f0_on_flow: false

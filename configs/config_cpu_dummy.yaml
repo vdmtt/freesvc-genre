@@ -40,7 +40,16 @@ data:
   num_workers: 0           # no dataloader subprocesses for a local dry run
   pitch_predictor: pm      # parselmouth-based: needs NO rmvpe.pt checkpoint
   pitch_features_dir: null # compute pitch on the fly during the test
-
+  use_genre_emb: true
+  num_genres: 5
+  genre_dim: 192
+  genre_map: ${data.dataset_dir}/genre_map.csv
+  genre2id:
+    pop: 0
+    rock: 1
+    ballad: 2
+    rnb: 3
+    edm: 4
 model:
   device: cpu              # ECAPA2 (and anything reading model.device) loads on CPU
   save_dir: dataset_custom/checkpoints_cpu_dummy

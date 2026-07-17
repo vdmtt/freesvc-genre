@@ -321,6 +321,9 @@ class FeatureAudioSpeakerLoader(torch.utils.data.Dataset):
 
         # Retro-compatibility with previous config files
         self.use_lang_emb = config.data.get("use_lang_emb", False)
+        self.use_genre_emb = config.data.get("use_genre_emb",False)
+        if self.use_genre_emb:
+            self.segment2genre = self._build_segment2genre(config.data.genre_map)
 
         if self.spectrogram_dir is not None:
             self.logger.info(
@@ -509,6 +512,23 @@ class FeatureAudioSpeakerLoader(torch.utils.data.Dataset):
     def _load_language_id(self, lang):
         lang_id = self.config.data.lang2id[lang]
         return lang_id
+    def _build_segment2genre(self,genre_map_path):
+        mapping={}
+        with open(genre_map_path,encoding = "utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                seg,genre = line.split(",",1)
+                mapping[seg.strip()] = genre.strip()
+        self.logger.info(f"Loaded {len(mapping)} segment->genre entries")
+        return mapping
+    def _load_genre_id(self,audio_path):
+        stem = os.path.basename(audio_path).replace(".wav","")
+        seg =stem.rsplit("_",1)[-1]
+        genre = self.segment2genre[seg]
+        return self.config.data.genre2id[genre]
+
 
     def get_audio_and_features(self, data):
         audio_path, lang, speaker = data
@@ -516,19 +536,12 @@ class FeatureAudioSpeakerLoader(torch.utils.data.Dataset):
         spec = self._load_spectrogram(audio_path, audio_norm, lang, speaker)
         c = self._load_content_feature(audio_path, lang, speaker)
         pitch = self._load_pitch(audio_path, audio_norm, lang, speaker)
-        if self.use_spk_emb:
-            spk = self._load_spk_embedding(audio_path, lang, speaker)
-        if self.use_lang_emb:
-            lang_id = self._load_language_id(lang)
+        spk = self._load_spk_embedding(audio_path,lang,speaker) if self.use_spk_emb else None
+        lang_id = self._load_language_id(lang) if self.use_lang_emb else None
+        genre_id = self._load_genre_id(audio_path) if self.use_genre_emb else None
+        return [c,spec,audio_norm, pitch,spk,lang_id, genre_id]
 
-        if self.use_spk_emb and not self.use_lang_emb:
-            return [c, spec, audio_norm, pitch, spk]
-        elif self.use_lang_emb and self.use_spk_emb:
-            return [c, spec, audio_norm, pitch, spk, lang_id]
-        elif self.use_lang_emb and not self.use_spk_emb:
-            return [c, spec, audio_norm, pitch, lang_id]
-        else:
-            return [c, spec, audio_norm, pitch]
+
 
     def __getitem__(self, index):
         return self.metadata[index]
@@ -548,6 +561,7 @@ class FeatureAudioSpeakerCollate():
         self.use_spk_emb = config.data.use_spk_emb
         # Retro-compatibility with previous config files
         self.use_lang_emb = config.data.get("use_lang_emb", False)
+        self.use_genre_emb = config.data.get("use_genre_emb",False)
         self.dataset = dataset
 
     def __call__(self, batch_files_and_speakers):
@@ -586,7 +600,10 @@ class FeatureAudioSpeakerCollate():
             lang_ids = torch.LongTensor(len(batch))
         else:
             lang_ids = None
-
+        if self.use_genre_emb:
+            genre_ids = torch.LongTensor(len(batch))
+        else:
+            genre_ids = None
         spec_padded = torch.FloatTensor(
             len(batch), batch[0][1].size(0), max_spec_len)
         wav_padded = torch.FloatTensor(len(batch), 1, max_wav_len)
@@ -642,11 +659,10 @@ class FeatureAudioSpeakerCollate():
                     spks[i] = row[4]
                 except:
                     self.logger.error(str(spks[i]) + " " + str(row[4]))
-                if self.use_lang_emb:
-                    lang_ids[i] = row[5]
-            else:
-                if self.use_lang_emb:
-                    lang_ids[i] = row[4]
+            if self.use_lang_emb:
+                lang_ids[i] = row[5]
+            if self.use_genre_emb:
+                genre_ids[i]= row[6]
         spec_seglen = spec_lengths[-1] if spec_lengths[-1] < self.hps.train.max_speclen + \
             1 else self.hps.train.max_speclen + 1
         wav_seglen = spec_seglen * self.hps.data.hop_length
@@ -668,14 +684,7 @@ class FeatureAudioSpeakerCollate():
         else:
             c_padded = None
 
-        if self.use_spk_emb and not self.use_lang_emb:
-            return c_padded, spec_padded, wav_padded, pitch_padded, spks
-        elif self.use_lang_emb and self.use_spk_emb:
-            return c_padded, spec_padded, wav_padded, pitch_padded, spks, lang_ids
-        elif self.use_lang_emb and not self.use_spk_emb:
-            return c_padded, spec_padded, wav_padded, pitch_padded, lang_ids
-        else:
-            return c_padded, spec_padded, wav_padded, pitch_padded
+        return c_padded, spec_padded, wav_padded, pitch_padded, spks, lang_ids, genre_ids
 
 
 class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
