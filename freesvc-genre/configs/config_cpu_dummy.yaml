@@ -25,12 +25,12 @@ train:
   use_multiprocessing: false
   resume_training: false
   raise_error: true        # surface any error instead of swallowing it
-  valid_steps_interval: 5
+  valid_steps_interval: 1000
   save_steps_interval: 2
   valid_epoch_interval: 1000000
   save_epoch_interval: 1
   # Use the simple bucket sampler (no weighted sampling) to keep the test minimal
-  weighted_batch_speaker_sampling: 0.0
+  weighted_batch_speaker_sampling: 0.5
   weighted_batch_lang_sampling: 0.0
 
 data:
@@ -45,11 +45,11 @@ data:
   genre_dim: 192
   genre_map: ${data.dataset_dir}/genre_map.csv
   genre2id:
-    pop: 0
-    rock: 1
-    ballad: 2
-    rnb: 3
-    edm: 4
+    blues: 0
+    funksoulrnb: 1
+    jazz: 2
+    pop: 3
+    rock: 4
 model:
   device: cpu              # ECAPA2 (and anything reading model.device) loads on CPU
   save_dir: dataset_custom/checkpoints_cpu_dummy

@@ -44,7 +44,8 @@ class SpinModelFeatureExtractor(nn.Module):
                 orig_freq=self.svc_model_sr,
                 new_freq=self.extractor_sr,
             )
-
+        if y.dim()==2:
+            y = y.unsqueeze(1)
         wav_list, wav_len, padding_mask = spin_collate_fn(y)
         wav_list.cuda()
         padding_mask.cuda()

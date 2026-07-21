@@ -18,7 +18,24 @@ import models.commons as commons
 from utils import load_wav_to_torch, load_dataset_csv
 from mel_processing import mel_processing
 from models.f0_predictor import get_f0_predictor
+import re
 
+_SEG_RE = re.compile(r"(\d{8})_[0-9a-fA-F]{4,}$")
+
+def parse_segment_id(path):                                      # [GENRE]
+    stem = os.path.basename(path)
+    if stem.endswith(".wav"):
+        stem = stem[:-4]
+    m = _SEG_RE.search(stem)
+    if m:
+        return m.group(1)
+    parts = stem.split("_")
+    if len(parts) >= 2:
+        m = re.search(r"(\d{8})$", parts[-2])
+        if m:
+            return m.group(1)
+    hits = re.findall(r"\d{8}", stem)
+    return hits[-1] if hits else None
 
 class DistributedSamplerWrapper(DistributedSampler):
     """Wrapper over Sampler for distributed training. It allows you to use any sampler in distributed mode.
@@ -524,12 +541,11 @@ class FeatureAudioSpeakerLoader(torch.utils.data.Dataset):
         self.logger.info(f"Loaded {len(mapping)} segment->genre entries")
         return mapping
     def _load_genre_id(self,audio_path):
-        stem = os.path.basename(audio_path).replace(".wav","")
-        seg =stem.rsplit("_",1)[-1]
+        seg = parse_segment_id(audio_path)
+        if seg is None:
+            raise ValueError(f"Cannot parse segment_id: {audio_path}")
         genre = self.segment2genre[seg]
         return self.config.data.genre2id[genre]
-
-
     def get_audio_and_features(self, data):
         audio_path, lang, speaker = data
         audio_norm = self._load_audio_norm(audio_path)

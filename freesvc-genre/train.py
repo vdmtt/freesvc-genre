@@ -38,7 +38,8 @@ from losses import (
     kl_loss
 )
 from mel_processing import mel_processing
-
+import cpu_compat                              # [CPU-DUMMY]
+cpu_compat.activate_cpu_fallback()
 if not torch.cuda.is_available():
     import logging
     logging.warning("[cpu] CUDA unavailable -> .cuda() becomes no-op (smoke test only).")
@@ -267,22 +268,12 @@ class Trainer:
             for batch_idx, items in tqdm(enumerate(valid_loader)):
                 if items is None:
                     continue
-                if self.config.data.use_spk_emb and not self.config.data.get("use_lang_emb", False):
-                    c, spec, y, pitch, spk = items
-                    g = spk[:1].cuda(0)
-                    lang_id = None
-                elif self.config.data.use_spk_emb and self.config.data.get("use_lang_emb", False):
-                    c, spec, y, pitch, spk, lang_id = items
-                    g = spk[:1].cuda(0)
-                    lang_id = lang_id.cuda(0)
-                elif self.config.data.get("use_lang_emb", False) and not self.config.data.use_spk_emb:
-                    c, spec, y, pitch, lang_id = items
-                    g = None
-                    lang_id = lang_id.cuda(0)
-                else:
-                    c, spec, y, pitch = items
-                    g = None
-                    lang_id = None
+                    # collate luon tra 7 phan tu co dinh (None neu tat)   # [GENRE]
+                c, spec, y, pitch, spk, lang_id, genre_id = items
+                g = spk[:1].cuda(0) if spk is not None else None
+                lang_id = lang_id.cuda(0) if lang_id is not None else None
+                genre_id = genre_id.cuda(0) if genre_id is not None else None  # [GENRE]
+
                 spec, y, pitch = spec[:1].cuda(0), y[:1].cuda(0), pitch[:1].cuda(0)
                 if c is not None:
                     c = c[:1].cuda(0)
@@ -302,6 +293,7 @@ class Trainer:
                     mel=mel,
                     pitch=pitch,
                     lang_id=lang_id,
+                    genre_id=genre_id,
                 )
                 y_hat_mel = mel_processing.mel_spectrogram_torch(
                     y_hat.squeeze(1).float(),

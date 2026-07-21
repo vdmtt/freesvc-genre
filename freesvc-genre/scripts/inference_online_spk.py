@@ -16,7 +16,7 @@ import pyreaper
 import soundfile as sf
 import torch
 import torchaudio
-
+import re
 import sys
 sys.path.append(".")
 sys.path.append("..")
@@ -171,20 +171,38 @@ def compute_target_embedding_online(
     cache[key] = g_tgt
     print(f"[spk online] {speaker_tgt}: averaged {len(embs)} ref wav(s), dim={g_tgt.shape[1]}")
     return g_tgt
+
+
+_SEG_RE = re.compile(r"(\d{8})_[0-9a-fA-F]{4,}$")  # [GENRE]
+def parse_segment_id(path):  # [GENRE]
+    stem = os.path.basename(path)
+    if stem.endswith(".wav"):
+        stem = stem[:-4]
+    m = _SEG_RE.search(stem)
+    if m:
+        return m.group(1)
+    parts = stem.split("_")
+    if len(parts) >= 2:
+        m = re.search(r"(\d{8})$", parts[-2])
+        if m:
+            return m.group(1)
+    hits = re.findall(r"\d{8}", stem)
+    return hits[-1] if hits else None
 def _resolve_genre_id(src_path, genre2id, segment2genre, forced_genre=None):   # [GENRE]
     if genre2id is None:
         return None
     if forced_genre is not None:
         genre = forced_genre
     else:
-        stem = os.path.basename(src_path).replace(".wav", "")
-        seg = stem.rsplit("_", 1)[-1]            # xxxxyyyy lấy từ bên phải
+        seg = parse_segment_id(src_path)                               # [GENRE]
+        if seg is None:
+            print(f"[GENRE] WARNING: khong parse duoc segment id tu {src_path}")
+            return None
         genre = segment2genre.get(seg)
         if genre is None:
             print(f"[GENRE] WARNING: khong tim thay genre cho segment '{seg}' ({src_path}); genre_id=None")
             return None
     return torch.tensor(genre2id[genre]).unsqueeze(0).cuda()
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--hpfile", type=str, help="path to yaml config file", required=True)
@@ -229,7 +247,13 @@ def main():
         vad_model_and_utils = get_vad_model_and_utils(use_cuda=torch.cuda.is_available())
 
     os.makedirs(args.out_dir, exist_ok=True)
-    hps = utils.HParams(**utils.get_hparams_from_file(args.hpfile))
+    from hydra import initialize_config_dir, compose
+    from omegaconf import OmegaConf
+    cfg_dir = os.path.dirname(os.path.abspath(args.hpfile))
+    cfg_name = os.path.splitext(os.path.basename(args.hpfile))[0]
+    with initialize_config_dir(config_dir=cfg_dir, version_base=None):
+        cfg = compose(config_name=cfg_name)
+    hps = utils.HParams(**OmegaConf.to_container(cfg, resolve=True))
     print(hps)
 
     pitch_predictor = get_f0_predictor(
@@ -278,6 +302,8 @@ def main():
     if args.ignore_metadata_header:
         rawrows = rawrows[1:]
     for rawrow in tqdm(rawrows, desc="Processing metadata"):
+        if not rawrow or all(not c.strip() for c in rawrow):
+            continue
         if len(rawrow) == 6:
             src, lang_src, speaker_src, transcript, speaker_tgt, lang_tgt = rawrow
         elif len(rawrow) == 5:
@@ -424,6 +450,9 @@ def main():
                 "Output audio:", len(audio)
             )
             # save_path = src.replace(args.in_dir, args.out_dir)
+            src_seg = parse_segment_id(src) or os.path.basename(src).replace(".wav", "")
+            genre_tag = f"_{args.genre}" if args.genre else ""
+            out_name = f"{speaker_src}_{src_seg}__{speaker_tgt}{genre_tag}.wav"
             save_path = os.path.join(
                 args.out_dir,
                 os.path.basename(args.metadata_path.replace(".csv", "")),
@@ -431,7 +460,7 @@ def main():
                 lang_tgt,
                 speaker_src,
                 speaker_tgt,
-                os.path.basename(src)
+                out_name
             )
 
             print("Save path:", save_path)

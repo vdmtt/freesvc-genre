@@ -16,8 +16,34 @@ Dung:
 """
 import argparse
 import os
+import re
 import sys
 from collections import defaultdict
+
+
+SEG_RE = re.compile(r"(\d{8})_[0-9a-fA-F]{4,}$")
+
+
+def parse_segment_id(path):
+    """Lay segment id (xxxxyyyy) tu ten file THUC TE.
+
+    Format that: {Ca_Si}_{CaSiVietLien}{songid}{segid}_{hash}.wav
+    VD: Sons_Of_The_East_SonsOfTheEast13250001_44d218.wav -> '13250001'
+    KHONG dung rsplit('_',1)[-1] -> se ra hash '44d218'!
+    """
+    stem = os.path.basename(path)
+    if stem.endswith(".wav"):
+        stem = stem[:-4]
+    m = SEG_RE.search(stem)
+    if m:
+        return m.group(1)
+    parts = stem.split("_")
+    if len(parts) >= 2:
+        m = re.search(r"(\d{8})$", parts[-2])
+        if m:
+            return m.group(1)
+    hits = re.findall(r"\d{8}", stem)
+    return hits[-1] if hits else None
 
 
 def parse_genre_map(path, sep=","):
@@ -37,6 +63,7 @@ def parse_genre_map(path, sep=","):
 def segments_from_csv(csv_paths, sep="|"):
     """Lay {segment_id: singer} tu metadata csv."""
     segs = {}
+    unparsed = []
     for csv_path in csv_paths:
         if not os.path.exists(csv_path):
             print(f"[WARN] khong thay {csv_path}, bo qua")
@@ -48,11 +75,71 @@ def segments_from_csv(csv_paths, sep="|"):
                     continue
                 cols = row.split(sep)
                 path = cols[0]
-                stem = os.path.basename(path).replace(".wav", "")
-                seg = stem.rsplit("_", 1)[-1]        # xxxxyyyy
-                singer = cols[2] if len(cols) > 2 else stem.rsplit("_", 1)[0]
+                seg = parse_segment_id(path)
+                if seg is None:
+                    unparsed.append(path)
+                    continue
+                singer = cols[2] if len(cols) > 2 else os.path.basename(os.path.dirname(path))
                 segs[seg] = singer
+    if unparsed:
+        print(f"[WARN] {len(unparsed)} file khong parse duoc segment id, vd: {unparsed[:2]}")
     return segs
+
+
+def cross_tab(genre_map, split_files, csv_sep, seg_len):
+    """Bang genre x split: phat hien genre vang mat khoi mot split."""
+    splits = {}
+    for label, path in split_files:
+        if not os.path.exists(path):
+            print(f"[WARN] khong thay {path}, bo qua")
+            continue
+        segs = segments_from_csv([path], csv_sep)
+        splits[label] = segs
+
+    if not splits:
+        return
+
+    genres = sorted(set(genre_map.values()))
+    labels = list(splits.keys())
+
+    print()
+    print("=" * 78)
+    print("CROSS-TAB: SO BAI moi genre theo split  (0 = NGUY HIEM)")
+    print("-" * 78)
+    hdr = f"{'GENRE':<14}"
+    for lb in labels:
+        hdr += f"{lb.upper():>12}"
+    print(hdr)
+    print("-" * 78)
+
+    problems = []
+    for g in genres:
+        line = f"{g:<14}"
+        counts = {}
+        for lb in labels:
+            songs = set()
+            for seg in splits[lb]:
+                if genre_map.get(seg) == g:
+                    songs.add(seg[:-seg_len] if len(seg) > seg_len else seg)
+            counts[lb] = len(songs)
+            line += f"{len(songs):>12}"
+        print(line)
+        if counts.get("train", 0) == 0 and any(counts.get(lb, 0) > 0 for lb in labels if lb != "train"):
+            problems.append((g, "KHONG co trong TRAIN nhung CO o split khac"))
+        elif counts.get("train", 0) > 0 and counts.get("train", 0) < 3:
+            problems.append((g, f"chi {counts['train']} bai trong TRAIN"))
+    print("=" * 78)
+
+    print("\nDANH GIA CROSS-TAB:")
+    if not problems:
+        print("  [OK] moi genre deu co mat trong train. Ablation genre se co nghia.")
+    for g, msg in problems:
+        print(f"  [FAIL] '{g}': {msg}")
+        print(f"         -> genre_emb['{g}'] KHONG duoc train = random vector.")
+        print(f"         -> luc eval no cong NHIEU vao x, keo tut ket qua run ablation")
+        print(f"            vi ly do SAI (khong phai vi nhan genre vo dung).")
+        print(f"         -> FIX: doi seed split, hoac ep ca si cua '{g}' vao train")
+        print(f"            (TRAIN_SINGERS_FILE trong config.sh), hoac bo genre nay.")
 
 
 def bar(frac, width=28):
@@ -71,6 +158,10 @@ def main():
                     help="so ky tu cua segment id o CUOI (default 4). songid = phan con lai")
     ap.add_argument("--min-songs", type=int, default=10,
                     help="canh bao genre co it hon so bai nay")
+    ap.add_argument("--splits", nargs="*", default=[], metavar="LABEL=PATH",
+                    help="cross-tab genre x split, vd: "
+                         "--splits train=dataset_custom/train.csv valid=dataset_custom/valid.csv "
+                         "test=dataset_custom/test.csv")
     args = ap.parse_args()
 
     mapping = parse_genre_map(args.genre_map, args.map_sep)
@@ -148,9 +239,20 @@ def main():
         print("  -> Lech dang ke. Co the thu weighted sampling (nen dung sqrt inverse freq).")
     else:
         print("  -> Tuong doi can bang. Chay baseline khong weighted truoc.")
-    if not has_singer:
+    if not has_singer and not args.splits:
         print("\n  [INFO] Chay lai voi --csv dataset_custom/train.csv de biet so CA SI moi genre")
         print("         (nhieu bai nhung cung 1 ca si van la tin hieu overfit).")
+
+    if args.splits:
+        full_map = parse_genre_map(args.genre_map, args.map_sep)
+        split_files = []
+        for item in args.splits:
+            if "=" not in item:
+                print(f"[WARN] --splits sai dinh dang: {item!r}, can LABEL=PATH")
+                continue
+            lb, path = item.split("=", 1)
+            split_files.append((lb, path))
+        cross_tab(full_map, split_files, args.csv_sep, args.seg_len)
 
 
 if __name__ == "__main__":
