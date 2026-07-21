@@ -19,18 +19,28 @@ import os
 import re
 import shutil
 import subprocess
+import wave
 from pathlib import Path
 
 
 AUDIO_EXTS = {".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac"}
 
 # trailing "_<digits>" or "_chunk_<digits>" / "-segment_<digits>" etc.
+def wav_duration_sec(path: Path):
+    """Duration tu header wav; None neu doc loi (header hong/truncate).
+    Chi ap dung cho .wav — cac dinh dang khac bo qua check (se qua ffmpeg)."""
+    try:
+        with wave.open(str(path), "rb") as w:
+            rate = w.getframerate()
+            return w.getnframes() / float(rate) if rate > 0 else None
+    except Exception:
+        return None
+
+
 _SEG_SUFFIX = re.compile(
     r"[\s\-_]*(?:chunk|seg|segment|part|clip)?[\s\-_]*\d+$",
     re.IGNORECASE,
 )
-
-
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-dir", required=True)
@@ -40,6 +50,10 @@ def parse_args():
     parser.add_argument("--copy-only", action="store_true")
     parser.add_argument("--manifest", default="")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--min-duration", type=float, default=0.5,
+                        help="loai wav ngan hon nguong nay (giay); 0 = tat filter")
+    parser.add_argument("--no-dedupe", action="store_true",
+                        help="TAT dedupe theo (singer, segment_id 8 so) giua cac chunk")
     parser.add_argument(
         "--singer-source",
         choices=["parent", "filename", "auto"],
@@ -140,10 +154,33 @@ def main():
     manifest_rows = []
     singer_counts = {}
     processed = skipped = failed = 0
+    too_short = duplicates = 0
+    seen_segments = set()   # (singer, segment_id 8 so) — dedupe chunk overlap
 
     for src in audio_files:
         try:
             singer = resolve_singer(src, input_dir, args.singer_source)
+
+            # [FILTER 1] loai clip qua ngan / header hong ngay tu nguon
+            if args.min_duration > 0 and src.suffix.lower() == ".wav":
+                dur = wav_duration_sec(src)
+                if dur is None or dur < args.min_duration:
+                    too_short += 1
+                    tag = f"{dur:.2f}s" if dur is not None else "corrupt-header"
+                    print(f"[SHORT] {tag}: {src}")
+                    continue
+
+            # [FILTER 2] dedupe theo (singer, segment id) — chan chunk overlap.
+            # Chi hieu luc khi quet TAT CA chunk trong MOT lan chay.
+            if not args.no_dedupe:
+                m = re.search(r"(\d{8})$", src.stem.strip())
+                if m:
+                    seg_key = (singer, m.group(1))
+                    if seg_key in seen_segments:
+                        duplicates += 1
+                        continue
+                    seen_segments.add(seg_key)
+
             out_name = unique_out_name(src, singer)
             dst = lang_dir / singer / out_name
 
@@ -179,6 +216,8 @@ def main():
     print(f"  processed   : {processed}")
     print(f"  skipped     : {skipped}")
     print(f"  failed      : {failed}")
+    print(f"  too short   : {too_short} (nguong {args.min_duration}s)")
+    print(f"  duplicates  : {duplicates} (chunk overlap, dedupe theo segment id)")
     print("\n[SINGER COUNTS]")
     for singer, count in sorted(singer_counts.items()):
         print(f"  {singer}: {count}")

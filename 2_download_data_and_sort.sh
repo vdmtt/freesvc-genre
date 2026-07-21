@@ -42,6 +42,7 @@ run_sort() {
         --language "${LANGUAGE}" \
         --sample-rate "${SAMPLE_RATE}" \
         --singer-source "${SORT_SINGER_MODE:-parent}" \
+        --min-duration "${MIN_CLIP_DURATION:-0.4}" \
         --manifest "${SORT_MANIFEST}" \
         "${extra_flags[@]}"
 }
@@ -65,8 +66,9 @@ elif [ "${#DATA_CHUNK_IDS[@]}" -gt 0 ]; then
             extract_archive "${CHUNK_FILE}" "${EXTRACT_DIR}"
             touch "${EXTRACT_DIR}/.done"
         fi
-        run_sort "${EXTRACT_DIR}"
     done
+
+    run_sort "${EXTRACT_BASE}"
 else
     echo "No SOURCE_DATA_DIR and DATA_CHUNK_IDS is empty. Edit config.sh first." >&2
     exit 1

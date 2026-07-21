@@ -3,9 +3,9 @@ CONDA_ENV_NAME="freesvc"
 PYTHON_VERSION="3.8"
 
 CHUNK_FORMAT="rar"  # zip | rar | tar | tar.gz | tgz | 7z | plain
-
+MIN_CLIP_DURATION=0.4
 SOURCE_DATA_DIR=""
-
+SORT_SINGER_MODE="filename"
 DATA_CHUNK_IDS=(
     "17u0IBwdwZnJU6X0Nh_zEd6a7oz2EnyIZ"
     "1Zjair5o_bP_K6TKV9sTOfvzHabB-Gsbt"
@@ -71,7 +71,7 @@ PITCH_NUM_WORKERS=1
 
 # ===== Training =====
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-CONFIG_NAME="config_our"
+CONFIG_NAME="config_genre"
 
 TRAIN_BATCH_SIZE=16
 EPOCHS=50
