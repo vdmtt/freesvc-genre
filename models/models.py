@@ -422,6 +422,14 @@ class SynthesizerTrn(nn.Module):
                 for param in self.speaker_encoder.parameters():
                     param.requires_grad = False
 
+            if self.spk_encoder_type == "ECAPA2SpeakerEncoder16k" and self.config.data.sampling_rate != 16000:
+                self._spk_resampler = torchaudio.transforms.Resample(
+                    orig_freq=self.config.data.sampling_rate, new_freq=16000)
+            else:
+                self._spk_resampler = None
+        else:
+            self._spk_resampler = None
+
         self.coarse_f0 = True if "coarse_f0" in self.config.model and self.config.model.coarse_f0 else False
         self.cond_f0_on_flow = True if "cond_f0_on_flow" in self.config.model and self.config.model.cond_f0_on_flow else False
         if not self.cond_f0_on_flow and not self.coarse_f0:
@@ -514,7 +522,14 @@ class SynthesizerTrn(nn.Module):
             g = self.speaker_encoder(y)
             g = g.unsqueeze(-1)
         elif self.spk_encoder_type == "ECAPA2SpeakerEncoder16k":
-            g = self.speaker_encoder(y)
+            assert y is not None, "y is None"
+            y_spk = y.squeeze(1) if y.dim() == 3 else y
+            if self._spk_resampler is not None:
+                y_spk = self._spk_resampler(y_spk)
+            print("y_spk", tuple(y_spk.shape), "| y", tuple(y.shape), flush=True)   # <-- tam
+
+            with torch.cuda.amp.autocast(enabled=False):
+                g = self.speaker_encoder(y_spk.float())
             g = g.unsqueeze(-1)
         else:
             raise ValueError(f"Unknown spk_encoder_model: {self.spk_encoder_type}")

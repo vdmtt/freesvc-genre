@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import random
 import time
 
 import hydra
@@ -38,7 +39,7 @@ from losses import (
     kl_loss
 )
 from mel_processing import mel_processing
-import cpu_compat                              # [CPU-DUMMY]
+import cpu_compat
 cpu_compat.activate_cpu_fallback()
 if not torch.cuda.is_available():
     import logging
@@ -80,7 +81,42 @@ class Trainer:
         self._stop = False
         self.n_data_loader_workers = self.config.data.num_workers
         self.scaler = GradScaler(enabled=config.train.fp16_run)
-
+    """Helpers"""
+    def _save(self,net_g,net_d, optim_g, optim_d):
+        lr = self.config.train.learning_rate
+        tag = f"{self.epoch:05d}_{self.step:07d}"
+        utils.save_checkpoint(net_g, optim_g,lr,self.epoch,os.path.join(self.save_dir,f"G_{tag}.pth"))
+        utils.save_checkpoint(net_d,optim_d,lr,self.epoch,os.path.join(self.save_dir,f"D_{tag}.pth"))
+    def _freeze_pretrained_encoders(self,net_g):
+        target = unwrap_model(net_g)
+        frozen = {}
+        for attr in ("speaker_encoder","c_model"):
+            cfg_key = f"freeze_{attr}"
+            if not bool(self.config.train.get(cfg_key,True)):
+                self.logger.warning(f"{cfg_key} = False, not enabled")
+                continue
+            module = getattr(target,attr,None)
+            if module is None:
+                continue
+            n = 0
+            for p  in module.parameters():
+                if p.requires_grad:
+                    p.requires_grad_(False)
+                    n +=1
+            frozen[attr] = n
+        return frozen
+    def _log_param_diagnostics(self,net_g,optim_g):
+        target = unwrap_model(net_g)
+        n_opt = sum(p.numel() for gp in optim_g.param_groups for p in gp['params'])
+        n_train = sum(p.numel() for p in target.parameters() if p.requires_grad)
+        n_total = sum(p.numel() for p in target.parameters())
+        self.logger.info(
+            f"params: tong {n_total / 1e6:.1f}M | trainable {n_train / 1e6:.1f}M "
+            f"| optimizer dang giu {n_opt / 1e6:.1f}M")
+        if n_opt != n_train:
+            self.logger.warning(
+                "optimizer dang giu tham so KHONG trainable -> lang phi VRAM va "
+                "lam phinh checkpoint. Kiem tra thu tu freeze/tao optimizer.")
     def _train_step(self, net_g, net_d, optim_g, optim_d, c, spec, y, pitch, spk=None, lang_id=None, genre_id =None,rank=0, writer=None, writer_valid=None):
 
         self.logger.debug(f"c: {c.shape if c is not None else None}, spec: {spec.shape}, y: {y.shape}, pitch: {pitch.shape}, g: {spk.shape if spk is not None else None}")
@@ -206,14 +242,28 @@ class Trainer:
 
         net_g.train()
         net_d.train()
+        max_steps = self.config.train.get("max_steps",None)
+        max_empty = int(self.config.train.get("max_empty_batches",50) or 0)
+        empty_batches = 0
+        empty_total = 0
 
-        if rank==0:
+        if rank==0 and not getattr(self,"_did_baseline_eval",False):
+            self._did_baseline_eval = True
             self.evaluate(generator=net_g, valid_loader=valid_loader, writer_valid=writer_valid)
 
         for batch_idx, items in tqdm(enumerate(train_loader), total=len(train_loader)):
+            if items is None:
+                empty_batches += 1
+                empty_total += 1
+                if max_empty and empty_batches >= max_empty:
+                    raise RuntimeError(
+                        f"{empty_batches} batch rong lien tiep tai step {self.step}. "
+                        f"Kiem tra sample rate (phai 24000), format (.wav PCM16 mono) "
+                        f"va duong dan trong train.csv."
+                    )
+                continue
+            empty_batches = 0
             try:
-                if items is None:
-                    continue
                 c,spec,y,pitch,spk,lang_id, genre_id = items
                 if spk is not None: spk = spk.cuda(rank,non_blocking=True)
                 if lang_id is not None: lang_id = lang_id.cuda(rank,non_blocking = True)
@@ -233,39 +283,44 @@ class Trainer:
                     rank=rank,
                     writer=writer
                 )
-
-                if rank==0 and self.step % self.config.train.valid_steps_interval == 0:
-                    self.evaluate(generator=net_g, valid_loader=valid_loader, writer_valid=writer_valid)
-                if rank==0 and self.step % self.config.train.save_steps_interval == 0:
-                    utils.save_checkpoint(net_g, optim_g, self.config.train.learning_rate, self.epoch, os.path.join(
-                        self.save_dir, f"G_{self.epoch:05d}_{self.step:07d}.pth"))
-                    utils.save_checkpoint(net_d, optim_d, self.config.train.learning_rate, self.epoch, os.path.join(
-                        self.save_dir, f"D_{self.epoch:05d}_{self.step:07d}.pth"))
-
-                # Stop exactly at max_steps (if set): save the final G+D right here
-                # so the checkpoint lands on the target step, then break out.
-                max_steps = self.config.train.get("max_steps", None)
-                if max_steps and self.step >= max_steps:
-                    if rank == 0:
-                        self.logger.info(f"Reached max_steps={max_steps}; saving final checkpoint and stopping.")
-                        utils.save_checkpoint(net_g, optim_g, self.config.train.learning_rate, self.epoch, os.path.join(
-                            self.save_dir, f"G_{self.epoch:05d}_{self.step:07d}.pth"))
-                        utils.save_checkpoint(net_d, optim_d, self.config.train.learning_rate, self.epoch, os.path.join(
-                            self.save_dir, f"D_{self.epoch:05d}_{self.step:07d}.pth"))
-                    self._stop = True
-                    break
-
-            except Exception as e:  # TODO: temporary here because there was some issues in the dataset
-                logger.error(f"Error on step {self.step} (might indicate a problem with the dataset): {str(e)}")
+            except Exception as e:
+                self.logger.error(
+                    f"Loi tai step {self.step} (co the do dataset): "
+                    f"{type(e).__name__}: {e}")
                 if self.config.train.raise_error:
-                    raise e
+                    raise
+                continue
+
+            if rank==0 and self.step % self.config.train.valid_steps_interval == 0:
+                self.evaluate(generator=net_g, valid_loader=valid_loader, writer_valid=writer_valid)
+            if rank==0 and self.step % self.config.train.save_steps_interval == 0:
+                self._save(net_g,net_d,optim_g,optim_d)
+
+            # Stop exactly at max_steps (if set): save the final G+D right here
+            # so the checkpoint lands on the target step, then break out.
+            if max_steps and self.step >= max_steps:
+                if rank == 0:
+                    self.logger.info(f"Reached max_steps={max_steps}; saving final checkpoint and stopping.")
+                    self._save(net_g,net_d,optim_g, optim_d)
+                self._stop = True
+                break
+
+        if rank == 0 and empty_total :
+            self.logger.warning(
+                f"Epoch {self.epoch}: {empty_total} batch rong bi bo qua "
+                f"(khong lien tiep du de dung)."
+            )
 
 
     def evaluate(self, generator, valid_loader, writer_valid=None):
         self.logger.info("Evaluating...")
         generator.eval()
+        max_eval = int(self.config.train.get("max_eval_batches",4) or 0)
+        max_media = int(self.config.train.get("max_eval_media",2) or 0)
         with torch.no_grad():
             for batch_idx, items in tqdm(enumerate(valid_loader)):
+                if max_eval  and batch_idx >= max_eval:
+                    break
                 if items is None:
                     continue
                     # collate luon tra 7 phan tu co dinh (None neu tat)   # [GENRE]
@@ -308,7 +363,7 @@ class Trainer:
 
                 # TODO: add more metrics
 
-                if writer_valid:
+                if writer_valid and (not max_media or batch_idx < max_media):
                     image_dict = {
                         f"gen/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(y_hat_mel[0].cpu().numpy()),
                         f"gt/mel_{batch_idx}": utils.plot_spectrogram_to_numpy(mel[0].cpu().numpy())
@@ -425,11 +480,14 @@ class Trainer:
             self.run_dir, self.config.tb_log_dir, "train"))
         writer_valid = SummaryWriter(log_dir=os.path.join(
             self.run_dir, self.config.tb_log_dir, "valid"))
-
+        seed = int(self.config.seed)
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
         if self.config.train.distributed:
             dist.init_process_group(
                 backend='nccl', init_method='env://', world_size=n_gpus, rank=rank)
-            torch.manual_seed(self.config.seed)
             torch.cuda.set_device(rank)
 
         self.logger.info("Creating models...")
@@ -442,17 +500,28 @@ class Trainer:
         ).cuda(rank)
         net_d = MultiPeriodDiscriminator(
             self.config.model.use_spectral_norm).cuda(rank)
+        if rank == 0:
+            try:
+                probe = unwrap_model(net_g).enc_p.pre.weight.flatten()[:5]
+                self.logger.info(f"seed check (enc_p.pre): {probe.tolist()}")
+            except AttributeError:
+                pass
+        frozen = self._freeze_pretrained_encoders(net_g)
+        for name, n in frozen.items():
+            self.logger.info(f"freeze {name}: {n} tensor")
+
         optim_g = torch.optim.AdamW(
-            net_g.parameters(),
+            [p for p in net_g.parameters() if p.requires_grad],
             self.config.train.learning_rate,
             betas=self.config.train.betas,
             eps=self.config.train.eps)
         optim_d = torch.optim.AdamW(
-            net_d.parameters(),
+            [p for p in net_d.parameters() if p.requires_grad],
             self.config.train.learning_rate,
             betas=self.config.train.betas,
             eps=self.config.train.eps)
-
+        if rank == 0:
+            self._log_param_diagnostics(net_g,optim_g)
         if self.config.train.distributed:
             net_g = DDP(net_g, device_ids=[rank])
             net_d = DDP(net_d, device_ids=[rank])
@@ -514,10 +583,7 @@ class Trainer:
                 if self.epoch % self.config.train.valid_epoch_interval == 0:
                     self.evaluate(generator=net_g, valid_loader=valid_loader, writer_valid=writer_valid)
                 if self.epoch % self.config.train.save_epoch_interval == 0:
-                    utils.save_checkpoint(net_g, optim_g, self.config.train.learning_rate, self.epoch, os.path.join(
-                        self.save_dir, f"G_{self.epoch:05d}_{self.step:07d}.pth"))
-                    utils.save_checkpoint(net_d, optim_d, self.config.train.learning_rate, self.epoch, os.path.join(
-                        self.save_dir, f"D_{self.epoch:05d}_{self.step:07d}.pth"))
+                    self._save(net_g,net_d, optim_g, optim_d)
 
             else:
                 self._train_one_epoch(rank=rank,
@@ -562,7 +628,13 @@ def main(cfg: DictConfig):
         if not cfg.train.use_multiprocessing:
             raise ValueError(
                 "Distributed training is only supported in multiprocessing mode.")
-
+    if cfg.train.use_multiprocessing and not cfg.train.distributed and n_gpus > 1:
+        raise ValueError(
+            f"use_multiprocessing=true, distributed=false, {n_gpus} GPU. "
+            f"Se spawn {n_gpus} process train doc lap ghi de checkpoint cua nhau. "
+            f"Dat use_multiprocessing=false, hoac CUDA_VISIBLE_DEVICES=\"0\", "
+            f"hoac distributed=true."
+        )
     if cfg.train.use_multiprocessing:
         # TODO: add hydra logging support for mp.spawn
         logger.warning(

@@ -40,7 +40,7 @@ data:
   num_workers: 0           # no dataloader subprocesses for a local dry run
   pitch_predictor: pm      # parselmouth-based: needs NO rmvpe.pt checkpoint
   pitch_features_dir: null # compute pitch on the fly during the test
-  use_genre_emb: true
+  use_genre_emb: false
   num_genres: 5
   genre_dim: 192
   genre_map: ${data.dataset_dir}/genre_map.csv

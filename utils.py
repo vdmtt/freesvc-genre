@@ -99,9 +99,34 @@ def stretch(mel, width):  # 0.5-2
     return torchvision.transforms.functional.resize(mel, (mel.size(-2), width))
 
 def load_weights(model, checkpoint_path, strict=False):
+    from collections import Counter
+
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    model = torch.nn.DataParallel(model)
-    model.load_state_dict(checkpoint['model'], strict=strict)
+    saved = checkpoint.get('model', checkpoint)
+    saved = {(k[7:] if k.startswith('module.') else k): v for k, v in saved.items()}
+
+    target = model.module if hasattr(model, 'module') else model
+    cur = target.state_dict()
+
+    new_sd = {}
+    loaded_by_prefix, total_by_prefix = Counter(), Counter()
+
+    for k, v in cur.items():
+        p = k.split('.')[0]
+        total_by_prefix[p] += 1
+        if k in saved and saved[k].shape == v.shape:
+            new_sd[k] = saved[k]
+            loaded_by_prefix[p] += 1
+        else:
+            new_sd[k] = v
+
+    target.load_state_dict(new_sd)
+
+    n_loaded = sum(loaded_by_prefix.values())
+    logger.info(f"load_weights: {n_loaded}/{len(cur)} tensor tu {checkpoint_path}")
+    for p in sorted(total_by_prefix):
+        logger.info(f"    {p:22s} {loaded_by_prefix[p]:4d}/{total_by_prefix[p]:4d}")
+
     return model
 
 def load_checkpoint(checkpoint_path, model, optimizer=None, strict=False):
