@@ -171,4 +171,12 @@ cython_debug/
 
 /data/
 logs/
-spin.ckpt
+spin.ckpt*.pth
+*.ckpt
+*.pt
+__pycache__/
+*.pyc
+dataset_custom/checkpoints*/
+dataset_custom/runs/
+pretrained/
+outputs/
