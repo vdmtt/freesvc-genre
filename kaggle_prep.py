@@ -179,6 +179,5 @@ def main():
     print(f"      --in-dir {dst_root}/audio \\")
     print(f"      --out-dir {dst_root}/pitch_features \\")
     print(f"      --pitch-predictor rmvpe --skip-existing")
-
 if __name__ == "__main__":
     main()
