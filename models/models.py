@@ -526,8 +526,6 @@ class SynthesizerTrn(nn.Module):
             y_spk = y.squeeze(1) if y.dim() == 3 else y
             if self._spk_resampler is not None:
                 y_spk = self._spk_resampler(y_spk)
-            print("y_spk", tuple(y_spk.shape), "| y", tuple(y.shape), flush=True)   # <-- tam
-
             with torch.cuda.amp.autocast(enabled=False):
                 g = self.speaker_encoder(y_spk.float())
             g = g.unsqueeze(-1)
